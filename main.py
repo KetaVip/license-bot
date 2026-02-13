@@ -65,13 +65,19 @@ async def ping(ctx):
 
 # ================= SET VIP =================
 @bot.command(name="setvip")
-async def setvip(ctx, user_id: int, duration: str):
-    if not is_owner(ctx):
+async def setvip(ctx, user_id: str, duration: str):
+    if ctx.author.id != OWNER_ID:
         await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
         return
 
+    try:
+        user_id = int(user_id)
+    except:
+        await ctx.send("❌ User ID không hợp lệ.")
+        return
+
     if duration not in ["3days", "30days"]:
-        await ctx.send("⚠️ Thời hạn chỉ: `3days` hoặc `30days`")
+        await ctx.send("⚠️ Dùng: `3days` hoặc `30days`")
         return
 
     days = 3 if duration == "3days" else 30
@@ -81,30 +87,27 @@ async def setvip(ctx, user_id: int, duration: str):
     hwid = gen_hwid()
 
     cursor.execute(
-        "INSERT INTO licenses (user_id, hwid, expire_date) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO licenses (user_id, hwid, expire_date) VALUES (?, ?, ?)",
         (user_id, hwid, expire_str)
     )
     conn.commit()
 
-    guild = ctx.guild
-    member = guild.get_member(user_id)
-
+    member = ctx.guild.get_member(user_id)
     if member:
-        role = discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
+        role = discord.utils.get(ctx.guild.roles, name=VIP_ROLE_NAME)
         if not role:
-            role = await guild.create_role(name=VIP_ROLE_NAME)
+            role = await ctx.guild.create_role(name=VIP_ROLE_NAME)
         await member.add_roles(role)
 
     owner = await bot.fetch_user(OWNER_ID)
     await owner.send(
-        f"🔐 **CẤP VIP THÀNH CÔNG**\n"
+        f"🔐 **VIP ĐÃ CẤP**\n"
         f"👤 User ID: `{user_id}`\n"
         f"🔑 HWID: `{hwid}`\n"
         f"⏰ Hết hạn: `{expire_str}`"
     )
 
-    await ctx.send("✅ Đã cấp VIP. HWID đã gửi riêng cho OWNER.")
-
+    await ctx.send("✅ Đã cấp VIP thành công.")
 
 # ================= REMOVE VIP =================
 @bot.command(name="removevip")
