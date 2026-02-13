@@ -10,7 +10,7 @@ from discord.ext import commands
 # ================== CONFIG ==================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # set trong Render
 COMMAND_PREFIX = "!"
-OWNER_ID = 123456789012345678  # thay bằng Discord ID của bạn
+OWNER_ID = 489311363953328138  # thay bằng Discord ID của bạn
 DB_NAME = "license.db"
 
 # ================== DATABASE ==================
