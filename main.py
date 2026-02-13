@@ -1,22 +1,24 @@
 import os
-import threading
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 
-from flask import Flask, request, jsonify
 import discord
 from discord.ext import commands
+from flask import Flask, request, jsonify
 
-# ================== CONFIG ==================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # set trong Render
-COMMAND_PREFIX = "!"
-OWNER_ID = 489311363953328138  # thay bằng Discord ID của bạn
-DB_NAME = "license.db"
+# ===================== CONFIG =====================
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+OWNER_ID = 412189424441491456  # 🔴 THAY bằng Discord ID của bạn
+PREFIX = "!"
+DB_FILE = "licenses.db"
+VIP_DAYS = 30
+PORT = int(os.getenv("PORT", 10000))
+# =================================================
 
-# ================== DATABASE ==================
-conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+# ===================== DATABASE =====================
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cursor = conn.cursor()
-
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS licenses (
     hwid TEXT PRIMARY KEY,
@@ -24,18 +26,66 @@ CREATE TABLE IF NOT EXISTS licenses (
 )
 """)
 conn.commit()
+# ===================================================
 
-# ================== FLASK API ==================
+# ===================== DISCORD BOT =====================
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+
+
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
+    print("🤖 Bot is ready")
+
+
+def is_owner(ctx):
+    return ctx.author.id == OWNER_ID
+
+
+@bot.command(name="setrank")  # bạn có thể đổi thành setvip nếu muốn
+async def setrank(ctx, member: discord.Member, hwid: str):
+    if not is_owner(ctx):
+        await ctx.send("❌ Chỉ **OWNER** mới được dùng lệnh này.")
+        return
+
+    expire = datetime.utcnow() + timedelta(days=VIP_DAYS)
+    expire_str = expire.strftime("%Y-%m-%d")
+
+    cursor.execute(
+        "INSERT OR REPLACE INTO licenses (hwid, expire_date) VALUES (?, ?)",
+        (hwid, expire_str)
+    )
+    conn.commit()
+
+    await ctx.send(
+        f"✅ **Set rank thành công**\n"
+        f"👤 User: {member.mention}\n"
+        f"🔑 HWID: `{hwid}`\n"
+        f"⏰ Hết hạn: `{expire_str}`"
+    )
+
+
+@bot.command()
+async def ping(ctx):
+    await ctx.send("🏓 pong")
+# ======================================================
+
+# ===================== FLASK API =====================
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
     return "License API is running"
 
-@app.route("/check", methods=["GET"])
+
+@app.route("/check")
 def check_license():
     hwid = request.args.get("hwid")
-
     if not hwid:
         return jsonify({"status": "error", "message": "missing hwid"}), 400
 
@@ -49,70 +99,20 @@ def check_license():
         return jsonify({"status": "invalid"})
 
     expire_date = datetime.strptime(row[0], "%Y-%m-%d")
-    if datetime.now() > expire_date:
+    if datetime.utcnow() > expire_date:
         return jsonify({"status": "expired"})
 
     return jsonify({
         "status": "valid",
-        "expire": expire_date.strftime("%Y-%m-%d")
+        "expire": row[0]
     })
+# ====================================================
 
+# ===================== RUN BOTH =====================
 def run_flask():
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=PORT)
 
-# ================== DISCORD BOT ==================
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
-@bot.event
-async def on_ready():
-    print(f"Bot logged in as {bot.user}")
-
-@bot.command()
-async def add(ctx, hwid: str, days: int):
-    if ctx.author.id != OWNER_ID:
-        await ctx.send("❌ Bạn không có quyền")
-        return
-
-    expire_date = datetime.now() + timedelta(days=days)
-
-    cursor.execute(
-        "REPLACE INTO licenses (hwid, expire_date) VALUES (?, ?)",
-        (hwid, expire_date.strftime("%Y-%m-%d"))
-    )
-    conn.commit()
-
-    await ctx.send(
-        f"✅ Đã thêm license\nHWID: `{hwid}`\nHết hạn: `{expire_date.strftime('%Y-%m-%d')}`"
-    )
-
-@bot.command()
-async def remove(ctx, hwid: str):
-    if ctx.author.id != OWNER_ID:
-        await ctx.send("❌ Bạn không có quyền")
-        return
-
-    cursor.execute("DELETE FROM licenses WHERE hwid = ?", (hwid,))
-    conn.commit()
-    await ctx.send(f"🗑️ Đã xoá license `{hwid}`")
-
-@bot.command()
-async def check(ctx, hwid: str):
-    cursor.execute(
-        "SELECT expire_date FROM licenses WHERE hwid = ?",
-        (hwid,)
-    )
-    row = cursor.fetchone()
-
-    if not row:
-        await ctx.send("❌ Không tồn tại")
-        return
-
-    expire_date = datetime.strptime(row[0], "%Y-%m-%d")
-    await ctx.send(f"✅ License hợp lệ đến `{expire_date.strftime('%Y-%m-%d')}`")
-
-# ================== START ==================
-if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
-    bot.run(DISCORD_TOKEN)
+threading.Thread(target=run_flask).start()
+bot.run(DISCORD_TOKEN)
+# ====================================================
