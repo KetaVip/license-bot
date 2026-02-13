@@ -6,17 +6,15 @@ import string
 from datetime import datetime, timedelta
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from flask import Flask, request, jsonify
 
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-
-OWNER_ID = 489311363953328138  # ✅ OWNER CHUẨN
+OWNER_ID = 489311363953328138
 PREFIX = "!"
-VIP_ROLE_NAME = "VIP"
-
 DB_FILE = "licenses.db"
+VIP_ROLE_NAME = "VIP"
 PORT = int(os.getenv("PORT", 8080))
 # ========================================
 
@@ -33,7 +31,11 @@ CREATE TABLE IF NOT EXISTS licenses (
 )
 """)
 conn.commit()
-# ===========================================
+# ==========================================
+
+
+def gen_hwid():
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=16))
 
 
 # ================= DISCORD BOT =================
@@ -44,18 +46,16 @@ intents.members = True
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
 
-def is_owner(ctx):
-    return ctx.author.id == OWNER_ID
-
-
-def gen_hwid(length=16):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
-
 @bot.event
 async def on_ready():
+    print("===================================")
     print(f"✅ Logged in as {bot.user}")
-    check_expired_vips.start()
+    print(f"🆔 Bot ID: {bot.user.id}")
+    print("===================================")
+
+
+def owner_only(ctx):
+    return ctx.author.id == OWNER_ID
 
 
 @bot.command()
@@ -63,10 +63,11 @@ async def ping(ctx):
     await ctx.send("🏓 pong")
 
 
-# ================= SET VIP =================
 @bot.command(name="setvip")
 async def setvip(ctx, user_id: str, duration: str):
-    if ctx.author.id != OWNER_ID:
+    print("🔥 setvip command triggered")
+
+    if not owner_only(ctx):
         await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
         return
 
@@ -76,14 +77,16 @@ async def setvip(ctx, user_id: str, duration: str):
         await ctx.send("❌ User ID không hợp lệ.")
         return
 
-    if duration not in ["3days", "30days"]:
+    if duration == "3days":
+        days = 3
+    elif duration == "30days":
+        days = 30
+    else:
         await ctx.send("⚠️ Dùng: `3days` hoặc `30days`")
         return
 
-    days = 3 if duration == "3days" else 30
     expire = datetime.utcnow() + timedelta(days=days)
     expire_str = expire.strftime("%Y-%m-%d")
-
     hwid = gen_hwid()
 
     cursor.execute(
@@ -109,44 +112,6 @@ async def setvip(ctx, user_id: str, duration: str):
 
     await ctx.send("✅ Đã cấp VIP thành công.")
 
-# ================= REMOVE VIP =================
-@bot.command(name="removevip")
-async def removevip(ctx, user_id: int):
-    if not is_owner(ctx):
-        await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
-        return
-
-    cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-    member = ctx.guild.get_member(user_id)
-    if member:
-        role = discord.utils.get(ctx.guild.roles, name=VIP_ROLE_NAME)
-        if role:
-            await member.remove_roles(role)
-
-    await ctx.send("🗑️ Đã xóa VIP.")
-
-
-# ================= AUTO REMOVE EXPIRED =================
-@tasks.loop(minutes=5)
-async def check_expired_vips():
-    cursor.execute("SELECT user_id, expire_date FROM licenses")
-    rows = cursor.fetchall()
-
-    for user_id, expire_str in rows:
-        expire = datetime.strptime(expire_str, "%Y-%m-%d")
-        if datetime.utcnow() > expire:
-            cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
-            conn.commit()
-
-            for guild in bot.guilds:
-                member = guild.get_member(user_id)
-                if member:
-                    role = discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
-                    if role:
-                        await member.remove_roles(role)
-
 
 # ================= FLASK API =================
 app = Flask(__name__)
@@ -158,15 +123,12 @@ def home():
 
 
 @app.route("/check")
-def check_license():
+def check():
     hwid = request.args.get("hwid")
     if not hwid:
         return jsonify({"status": "error"})
 
-    cursor.execute(
-        "SELECT expire_date FROM licenses WHERE hwid = ?",
-        (hwid,)
-    )
+    cursor.execute("SELECT expire_date FROM licenses WHERE hwid = ?", (hwid,))
     row = cursor.fetchone()
 
     if not row:
