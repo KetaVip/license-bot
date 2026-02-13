@@ -4,7 +4,7 @@ import threading
 import random
 import string
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 import discord
 from discord.ext import commands
@@ -17,6 +17,7 @@ OWNER_ID = 489311363953328138
 PREFIX = "!"
 DB_FILE = "licenses.db"
 VIP_ROLE_NAME = "VIP"
+MAX_RESET_PER_DAY = 10
 # =========================================
 
 
@@ -29,7 +30,9 @@ CREATE TABLE IF NOT EXISTS licenses (
     user_id INTEGER,
     hwid TEXT PRIMARY KEY,
     expire_date TEXT,
-    ip TEXT
+    ip TEXT,
+    reset_count INTEGER DEFAULT 0,
+    reset_date TEXT
 )
 """)
 conn.commit()
@@ -39,7 +42,7 @@ conn.commit()
 # ================= DISCORD BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # ⚠️ BẮT BUỘC
+intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
@@ -56,10 +59,10 @@ async def get_vip_role(guild):
     return discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
 
 
-# ================= AUTO REMOVE EXPIRED (ASYNC) =================
+# ================= AUTO REMOVE EXPIRED =================
 async def auto_remove_expired():
     await bot.wait_until_ready()
-    print("🕒 Auto remove expired task started")
+    print("🕒 Auto remove expired started")
 
     while not bot.is_closed():
         now = datetime.utcnow()
@@ -70,11 +73,9 @@ async def auto_remove_expired():
         for user_id, expire_date in rows:
             expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
             if now > expire:
-                # xoá DB
                 cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
                 conn.commit()
 
-                # remove role VIP
                 for guild in bot.guilds:
                     member = guild.get_member(user_id)
                     role = await get_vip_role(guild)
@@ -90,8 +91,6 @@ async def auto_remove_expired():
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     print("🤖 Bot is ready")
-
-    # start auto task
     bot.loop.create_task(auto_remove_expired())
 
 
@@ -101,6 +100,7 @@ async def ping(ctx):
     await ctx.send("🏓 pong")
 
 
+# ===== SET VIP =====
 @bot.command(name="setvip")
 async def setvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
@@ -128,10 +128,11 @@ async def setvip(ctx, user_id: int, time_value: str):
     hwid = generate_hwid()
     expire_str = expire.strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute(
-        "INSERT OR REPLACE INTO licenses (user_id, hwid, expire_date, ip) VALUES (?, ?, ?, NULL)",
-        (user_id, hwid, expire_str)
-    )
+    cursor.execute("""
+        INSERT OR REPLACE INTO licenses
+        (user_id, hwid, expire_date, ip, reset_count, reset_date)
+        VALUES (?, ?, ?, NULL, 0, ?)
+    """, (user_id, hwid, expire_str, date.today().isoformat()))
     conn.commit()
 
     role = await get_vip_role(ctx.guild)
@@ -148,22 +149,44 @@ async def setvip(ctx, user_id: int, time_value: str):
     await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
 
 
-@bot.command(name="removevip")
-async def removevip(ctx, user_id: int):
-    if not is_owner(ctx):
+# ===== VIP RESET IP (LIMIT 10 / DAY) =====
+@bot.command(name="reset")
+async def reset(ctx):
+    user_id = ctx.author.id
+
+    cursor.execute("""
+        SELECT reset_count, reset_date FROM licenses WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await ctx.send("❌ Bạn không có VIP.")
         return
 
-    cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
+    reset_count, reset_date = row
+    today = date.today().isoformat()
+
+    # qua ngày mới → reset lượt
+    if reset_date != today:
+        reset_count = 0
+
+    if reset_count >= MAX_RESET_PER_DAY:
+        await ctx.send("❌ Bạn đã dùng hết 10 lần reset hôm nay.")
+        return
+
+    cursor.execute("""
+        UPDATE licenses
+        SET ip = NULL,
+            reset_count = ?,
+            reset_date = ?
+        WHERE user_id = ?
+    """, (reset_count + 1, today, user_id))
     conn.commit()
 
-    member = ctx.guild.get_member(user_id)
-    role = await get_vip_role(ctx.guild)
-    if member and role:
-        await member.remove_roles(role)
-
-    await ctx.send(f"🗑️ Đã remove VIP của <@{user_id}>")
+    await ctx.send(f"🔄 Reset IP thành công ({reset_count + 1}/10 hôm nay)")
 
 
+# ===== OWNER RESET IP =====
 @bot.command(name="resetip")
 async def resetip(ctx, user_id: int):
     if not is_owner(ctx):
@@ -175,6 +198,7 @@ async def resetip(ctx, user_id: int):
     await ctx.send(f"🔄 Đã reset IP cho `{user_id}`")
 
 
+# ===== CHECK ALL =====
 @bot.command(name="checkall")
 async def checkall(ctx):
     if not is_owner(ctx):
@@ -193,8 +217,7 @@ async def checkall(ctx):
     for user_id, hwid, expire_date in rows:
         expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
         if now <= expire:
-            remain = expire - now
-            msg += f"👤 `{user_id}`\n🔑 `{hwid}`\n⏰ `{remain}`\n\n"
+            msg += f"👤 `{user_id}`\n🔑 `{hwid}`\n⏰ `{expire - now}`\n\n"
 
     await ctx.send(msg[:1900])
 
@@ -208,13 +231,7 @@ def check_license():
     hwid = request.args.get("hwid")
     ip = request.remote_addr
 
-    if not hwid:
-        return jsonify({"status": "error"})
-
-    cursor.execute(
-        "SELECT expire_date, ip FROM licenses WHERE hwid = ?",
-        (hwid,)
-    )
+    cursor.execute("SELECT expire_date, ip FROM licenses WHERE hwid = ?", (hwid,))
     row = cursor.fetchone()
 
     if not row:
@@ -224,11 +241,10 @@ def check_license():
     if datetime.utcnow() > expire:
         return jsonify({"status": "expired"})
 
-    saved_ip = row[1]
-    if saved_ip is None:
+    if row[1] is None:
         cursor.execute("UPDATE licenses SET ip = ? WHERE hwid = ?", (ip, hwid))
         conn.commit()
-    elif saved_ip != ip:
+    elif row[1] != ip:
         return jsonify({"status": "ip_mismatch"})
 
     return jsonify({"status": "valid"})
@@ -236,11 +252,8 @@ def check_license():
 
 # ================= RUN =================
 def run_flask():
-    print("🌐 Flask API started")
     app.run(host="0.0.0.0", port=PORT)
 
 
 threading.Thread(target=run_flask, daemon=True).start()
-
-print("🚀 Starting Discord bot...")
 bot.run(DISCORD_TOKEN)
