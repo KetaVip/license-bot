@@ -8,13 +8,13 @@ from discord.ext import commands
 from flask import Flask, request, jsonify
 
 # ================= CONFIG =================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # SET TRONG RENDER
-OWNER_ID = 412189424441491456  # 🔴 THAY ID DISCORD CỦA BẠN
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+OWNER_ID = 412189424441491456  # 🔴 ID Discord của bạn
 PREFIX = "!"
 DB_FILE = "licenses.db"
 VIP_DAYS = 30
-PORT = int(os.getenv("PORT", 10000))
-# ==========================================
+PORT = int(os.getenv("PORT", 8080))
+# =========================================
 
 
 # ================= DATABASE =================
@@ -31,6 +31,43 @@ conn.commit()
 # ===========================================
 
 
+# ================= FLASK API =================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "✅ License API running"
+
+@app.route("/check")
+def check_license():
+    hwid = request.args.get("hwid")
+    if not hwid:
+        return jsonify({"status": "error", "msg": "no hwid"})
+
+    cursor.execute(
+        "SELECT expire_date FROM licenses WHERE hwid = ?",
+        (hwid,)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        return jsonify({"status": "invalid"})
+
+    expire = datetime.strptime(row[0], "%Y-%m-%d")
+    if datetime.utcnow() > expire:
+        return jsonify({"status": "expired"})
+
+    return jsonify({
+        "status": "valid",
+        "expire": row[0]
+    })
+
+
+def run_flask():
+    print("🌐 Flask API starting...")
+    app.run(host="0.0.0.0", port=PORT)
+
+
 # ================= DISCORD BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -42,17 +79,13 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    print("🤖 Bot is ready")
-    print("📌 Guilds:", bot.guilds)
+    print("🤖 Discord bot ready")
 
 
-# 🔴 BẮT BUỘC – KHÔNG CÓ → BOT KHÔNG NGHE LỆNH
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
-
-    print("MESSAGE:", message.content)
     await bot.process_commands(message)
 
 
@@ -60,15 +93,9 @@ def is_owner(ctx):
     return ctx.author.id == OWNER_ID
 
 
-# ================= COMMANDS =================
 @bot.command()
 async def ping(ctx):
     await ctx.send("🏓 pong")
-
-
-@bot.command()
-async def myid(ctx):
-    await ctx.send(f"🆔 Your ID: `{ctx.author.id}`")
 
 
 @bot.command(name="setvip")
@@ -105,44 +132,11 @@ async def removevip(ctx, hwid: str):
     await ctx.send(f"🗑️ Đã xóa VIP cho HWID `{hwid}`")
 
 
-# ================= FLASK API =================
-app = Flask(__name__)
+# ================= MAIN =================
+if __name__ == "__main__":
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
 
-
-@app.route("/")
-def home():
-    return "License API running"
-
-
-@app.route("/check")
-def check_license():
-    hwid = request.args.get("hwid")
-    if not hwid:
-        return jsonify({"status": "error", "msg": "no hwid"})
-
-    cursor.execute(
-        "SELECT expire_date FROM licenses WHERE hwid = ?",
-        (hwid,)
-    )
-    row = cursor.fetchone()
-
-    if not row:
-        return jsonify({"status": "invalid"})
-
-    expire = datetime.strptime(row[0], "%Y-%m-%d")
-    if datetime.utcnow() > expire:
-        return jsonify({"status": "expired"})
-
-    return jsonify({
-        "status": "valid",
-        "expire": row[0]
-    })
-
-
-# ================= RUN BOTH =================
-def run_flask():
-    app.run(host="0.0.0.0", port=PORT)
-
-
-threading.Thread(target=run_flask).start()
-bot.run(DISCORD_TOKEN)
+    print("🤖 Starting Discord bot...")
+    bot.run(DISCORD_TOKEN)
