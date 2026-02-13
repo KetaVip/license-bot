@@ -1,24 +1,21 @@
 import os
 import sqlite3
 import threading
+import random
+import string
 from datetime import datetime, timedelta
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from flask import Flask, request, jsonify
 
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-PORT = int(os.environ.get("PORT", 8080))
-
-OWNER_ID = 412189424441491456        # 🔴 ID DISCORD CỦA BẠN
-GUILD_ID = 1469614191353790652        # 🔴 ID SERVER
-VIP_ROLE_NAME = "VIP"               # 🔴 TÊN ROLE VIP
-
+OWNER_ID = 412189424441491456
 PREFIX = "!"
-VIP_DAYS = 30
 DB_FILE = "licenses.db"
-# =========================================
+PORT = int(os.getenv("PORT", 8080))
+# ==========================================
 
 
 # ================= DATABASE =================
@@ -27,7 +24,7 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS licenses (
-    user_id INTEGER,
+    user_id TEXT,
     hwid TEXT PRIMARY KEY,
     expire_date TEXT
 )
@@ -36,7 +33,7 @@ conn.commit()
 # ===========================================
 
 
-# ================= DISCORD BOT =================
+# ================= BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -44,120 +41,69 @@ intents.members = True
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
 
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
+
+
 def is_owner(ctx):
     return ctx.author.id == OWNER_ID
 
 
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
-    print("🤖 Bot is ready")
-    check_expired_vips.start()
+def gen_hwid():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=16))
 
 
-# ================= COMMANDS =================
-@bot.command()
-async def ping(ctx):
-    await ctx.send("🏓 pong")
-
-
+# ================= COMMAND =================
 @bot.command(name="setvip")
-async def setvip(ctx, member: discord.Member, hwid: str):
+async def setvip(ctx, user_id: int, duration: str):
     if not is_owner(ctx):
         await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
         return
 
-    expire = datetime.utcnow() + timedelta(days=VIP_DAYS)
+    if duration == "3days":
+        days = 3
+    elif duration == "30days":
+        days = 30
+    else:
+        await ctx.send("❌ Thời hạn chỉ được: `3days` hoặc `30days`")
+        return
+
+    member = ctx.guild.get_member(user_id)
+    if not member:
+        await ctx.send("❌ Không tìm thấy user trong server.")
+        return
+
+    expire = datetime.utcnow() + timedelta(days=days)
     expire_str = expire.strftime("%Y-%m-%d")
+
+    hwid = gen_hwid()
 
     cursor.execute(
         "INSERT OR REPLACE INTO licenses (user_id, hwid, expire_date) VALUES (?, ?, ?)",
-        (member.id, hwid, expire_str)
+        (str(user_id), hwid, expire_str)
     )
     conn.commit()
 
-    role = discord.utils.get(ctx.guild.roles, name=VIP_ROLE_NAME)
+    # ROLE VIP
+    role = discord.utils.get(ctx.guild.roles, name="VIP")
     if role:
         await member.add_roles(role)
 
-    # Gửi HWID riêng cho OWNER
-    owner = await bot.fetch_user(OWNER_ID)
-    await owner.send(
-        f"🔑 **HWID ĐÃ CẤP**\n"
-        f"👤 User: {member}\n"
-        f"🔑 HWID: `{hwid}`\n"
-        f"⏰ Hết hạn: `{expire_str}`"
-    )
+    # DM OWNER
+    owner = ctx.guild.get_member(OWNER_ID)
+    if owner:
+        await owner.send(
+            f"🔑 **CẤP VIP MỚI**\n"
+            f"👤 User ID: `{user_id}`\n"
+            f"HWID: `{hwid}`\n"
+            f"Hết hạn: `{expire_str}`"
+        )
 
     await ctx.send(
-        f"✅ Đã cấp VIP cho {member.mention}\n"
-        f"⏰ Hết hạn: `{expire_str}`"
+        f"✅ Đã cấp VIP cho <@{user_id}>\n"
+        f"⏰ Thời hạn: `{duration}`"
     )
-
-
-@bot.command(name="removevip")
-async def removevip(ctx, member: discord.Member):
-    if not is_owner(ctx):
-        await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
-        return
-
-    cursor.execute("DELETE FROM licenses WHERE user_id = ?", (member.id,))
-    conn.commit()
-
-    role = discord.utils.get(ctx.guild.roles, name=VIP_ROLE_NAME)
-    if role:
-        await member.remove_roles(role)
-
-    await ctx.send(f"🗑️ Đã xóa VIP của {member.mention}")
-
-
-@bot.command(name="checkhwid")
-async def checkhwid(ctx, hwid: str):
-    if not is_owner(ctx):
-        await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
-        return
-
-    cursor.execute(
-        "SELECT user_id, expire_date FROM licenses WHERE hwid = ?",
-        (hwid,)
-    )
-    row = cursor.fetchone()
-
-    if not row:
-        await ctx.send("❌ HWID không tồn tại.")
-        return
-
-    await ctx.send(
-        f"🔍 **HWID INFO**\n"
-        f"👤 User ID: `{row[0]}`\n"
-        f"⏰ Hết hạn: `{row[1]}`"
-    )
-
-
-# ================= AUTO EXPIRE TASK =================
-@tasks.loop(minutes=5)
-async def check_expired_vips():
-    now = datetime.utcnow()
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
-
-    role = discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
-    if not role:
-        return
-
-    cursor.execute("SELECT user_id, expire_date FROM licenses")
-    rows = cursor.fetchall()
-
-    for user_id, expire_date in rows:
-        expire = datetime.strptime(expire_date, "%Y-%m-%d")
-        if now > expire:
-            member = guild.get_member(user_id)
-            if member and role in member.roles:
-                await member.remove_roles(role)
-
-            cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
-            conn.commit()
 
 
 # ================= FLASK API =================
@@ -188,10 +134,7 @@ def check_license():
     if datetime.utcnow() > expire:
         return jsonify({"status": "expired"})
 
-    return jsonify({
-        "status": "valid",
-        "expire": row[0]
-    })
+    return jsonify({"status": "valid", "expire": row[0]})
 
 
 # ================= RUN =================
