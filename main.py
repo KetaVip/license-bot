@@ -11,8 +11,8 @@ from flask import Flask, request, jsonify
 
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-PORT = int(os.getenv("PORT", 8080))  # ⚠️ Railway dùng PORT động
-OWNER_ID = 489311363953328138        # 🔴 ID OWNER
+PORT = int(os.getenv("PORT", 8080))  # Railway dùng PORT động
+OWNER_ID = 489311363953328138
 PREFIX = "!"
 DB_FILE = "licenses.db"
 VIP_ROLE_NAME = "VIP"
@@ -64,8 +64,7 @@ def generate_hwid(length=16):
 
 
 async def get_vip_role(guild):
-    role = discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
-    return role
+    return discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
 
 
 # ================= COMMANDS =================
@@ -91,9 +90,7 @@ async def setvip(ctx, user_id: int, days: str):
         await ctx.send("❌ Số ngày không hợp lệ.")
         return
 
-    guild = ctx.guild
-    member = guild.get_member(user_id)
-
+    member = ctx.guild.get_member(user_id)
     if not member:
         await ctx.send("❌ Không tìm thấy user trong server.")
         return
@@ -108,11 +105,10 @@ async def setvip(ctx, user_id: int, days: str):
     )
     conn.commit()
 
-    role = await get_vip_role(guild)
+    role = await get_vip_role(ctx.guild)
     if role:
         await member.add_roles(role)
 
-    # Gửi HWID cho OWNER
     owner = await bot.fetch_user(OWNER_ID)
     await owner.send(
         f"👤 User ID: {user_id}\n"
@@ -139,8 +135,7 @@ async def removevip(ctx, user_id: int):
         await ctx.send("❌ User này không có VIP.")
         return
 
-    hwid = row[0]
-    cursor.execute("DELETE FROM licenses WHERE hwid = ?", (hwid,))
+    cursor.execute("DELETE FROM licenses WHERE hwid = ?", (row[0],))
     conn.commit()
 
     member = ctx.guild.get_member(user_id)
@@ -171,6 +166,56 @@ async def checkh(ctx, user_id: int):
         f"🔑 HWID: `{row[0]}`\n"
         f"⏰ Hết hạn: `{row[1]}`"
     )
+
+
+# ====== ✅ CHECKALL (OWNER ONLY) ======
+
+@bot.command(name="checkall")
+async def checkall(ctx):
+    if not is_owner(ctx):
+        await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
+        return
+
+    cursor.execute("SELECT user_id, hwid, expire_date FROM licenses")
+    rows = cursor.fetchall()
+
+    if not rows:
+        await ctx.send("⚠️ Không có HWID nào trong hệ thống.")
+        return
+
+    now = datetime.utcnow()
+    valid_list = []
+
+    for user_id, hwid, expire_date in rows:
+        expire = datetime.strptime(expire_date, "%Y-%m-%d")
+        if now <= expire:
+            days_left = (expire - now).days
+            valid_list.append(
+                f"👤 `{user_id}`\n"
+                f"🔑 `{hwid}`\n"
+                f"⏰ còn **{days_left} ngày**"
+            )
+
+    if not valid_list:
+        await ctx.send("⚠️ Không có HWID nào còn hiệu lực.")
+        return
+
+    header = "**📋 DANH SÁCH HWID CÒN HIỆU LỰC:**\n\n"
+
+    # gửi nhiều tin nếu quá dài
+    chunk = []
+    length = 0
+
+    for item in valid_list:
+        if length + len(item) > 1800:
+            await ctx.send(header + "\n\n".join(chunk))
+            chunk = []
+            length = 0
+        chunk.append(item)
+        length += len(item)
+
+    if chunk:
+        await ctx.send(header + "\n\n".join(chunk))
 
 
 # ================= FLASK API =================
