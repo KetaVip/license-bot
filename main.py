@@ -12,7 +12,7 @@ from flask import Flask, request, jsonify
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
-OWNER_ID = 412189424441491456  # ✅ OWNER CHUẨN
+OWNER_ID = 489311363953328138  # ✅ OWNER CHUẨN
 PREFIX = "!"
 VIP_ROLE_NAME = "VIP"
 
