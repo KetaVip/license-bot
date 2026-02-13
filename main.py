@@ -70,19 +70,30 @@ async def ping(ctx):
 
 
 @bot.command(name="setvip")
-async def setvip(ctx, user_id: int, days: str):
+async def setvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
         await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
         return
 
-    if not days.lower().endswith("days"):
-        await ctx.send("❌ Ví dụ đúng: `!setvip 123456789 3days`")
-        return
+    time_value = time_value.lower()
 
     try:
-        day_count = int(days.lower().replace("days", ""))
+        if time_value.endswith("m"):
+            minutes = int(time_value[:-1])
+            delta = timedelta(minutes=minutes)
+            label = f"{minutes} phút"
+
+        elif time_value.endswith("d"):
+            days = int(time_value[:-1])
+            delta = timedelta(days=days)
+            label = f"{days} ngày"
+
+        else:
+            await ctx.send("❌ Dùng: `30m` hoặc `3d`")
+            return
+
     except:
-        await ctx.send("❌ Số ngày không hợp lệ.")
+        await ctx.send("❌ Thời gian không hợp lệ.")
         return
 
     member = ctx.guild.get_member(user_id)
@@ -91,8 +102,8 @@ async def setvip(ctx, user_id: int, days: str):
         return
 
     hwid = generate_hwid()
-    expire = datetime.utcnow() + timedelta(days=day_count)
-    expire_str = expire.strftime("%Y-%m-%d")
+    expire = datetime.utcnow() + delta
+    expire_str = expire.strftime("%Y-%m-%d %H:%M:%S")
 
     cursor.execute(
         "INSERT OR REPLACE INTO licenses (user_id, hwid, expire_date) VALUES (?, ?, ?)",
@@ -108,13 +119,10 @@ async def setvip(ctx, user_id: int, days: str):
     await owner.send(
         f"👤 User ID: {user_id}\n"
         f"🔑 HWID: {hwid}\n"
-        f"⏰ Hết hạn: {expire_str}"
+        f"⏰ Hết hạn: {expire_str} (UTC)"
     )
 
-    await ctx.send(
-        f"✅ **Đã cấp VIP** cho <@{user_id}>\n"
-        f"⏰ {day_count} ngày"
-    )
+    await ctx.send(f"✅ **Đã cấp VIP** cho <@{user_id}> trong **{label}**")
 
 
 @bot.command(name="removevip")
@@ -148,10 +156,13 @@ async def checkh(ctx, user_id: int):
         await ctx.send("❌ User chưa có VIP.")
         return
 
+    expire = datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S")
+    remaining = expire - datetime.utcnow()
+
     await ctx.send(
         f"👤 User ID: {user_id}\n"
         f"🔑 HWID: `{row[0]}`\n"
-        f"⏰ Hết hạn: `{row[1]}`"
+        f"⏰ Còn lại: `{remaining}`"
     )
 
 
@@ -167,17 +178,17 @@ async def checkall(ctx):
     msg = "**📋 HWID CÒN HIỆU LỰC:**\n\n"
 
     for user_id, hwid, expire_date in rows:
-        expire = datetime.strptime(expire_date, "%Y-%m-%d")
+        expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
         if now <= expire:
-            days = (expire - now).days
-            msg += f"👤 `{user_id}`\n🔑 `{hwid}`\n⏰ {days} ngày\n\n"
+            remaining = expire - now
+            msg += f"👤 `{user_id}`\n🔑 `{hwid}`\n⏰ {remaining}\n\n"
 
     await ctx.send(msg[:1900])
 
 
 # ================= AUTO REMOVE EXPIRED =================
 
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=30)
 async def auto_remove_expired():
     now = datetime.utcnow()
 
@@ -185,7 +196,7 @@ async def auto_remove_expired():
     rows = cursor.fetchall()
 
     for user_id, expire_date in rows:
-        expire = datetime.strptime(expire_date, "%Y-%m-%d")
+        expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
         if now > expire:
             cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
             conn.commit()
@@ -222,7 +233,7 @@ def check_license():
     if not row:
         return jsonify({"status": "invalid"})
 
-    expire = datetime.strptime(row[0], "%Y-%m-%d")
+    expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
     if datetime.utcnow() > expire:
         return jsonify({"status": "expired"})
 
