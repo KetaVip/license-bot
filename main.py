@@ -3,15 +3,16 @@ import sqlite3
 import threading
 import random
 import string
+import asyncio
 from datetime import datetime, timedelta
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from flask import Flask, request, jsonify
 
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-PORT = int(os.getenv("PORT", 8080))  # Railway dùng PORT động
+PORT = int(os.getenv("PORT", 8080))
 OWNER_ID = 489311363953328138
 PREFIX = "!"
 DB_FILE = "licenses.db"
@@ -45,14 +46,8 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
+    auto_remove_expired.start()
     print("🤖 Bot is ready")
-
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    await bot.process_commands(message)
 
 
 def is_owner(ctx):
@@ -125,17 +120,9 @@ async def setvip(ctx, user_id: int, days: str):
 @bot.command(name="removevip")
 async def removevip(ctx, user_id: int):
     if not is_owner(ctx):
-        await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
         return
 
-    cursor.execute("SELECT hwid FROM licenses WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-
-    if not row:
-        await ctx.send("❌ User này không có VIP.")
-        return
-
-    cursor.execute("DELETE FROM licenses WHERE hwid = ?", (row[0],))
+    cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
     conn.commit()
 
     member = ctx.guild.get_member(user_id)
@@ -168,54 +155,47 @@ async def checkh(ctx, user_id: int):
     )
 
 
-# ====== ✅ CHECKALL (OWNER ONLY) ======
-
 @bot.command(name="checkall")
 async def checkall(ctx):
     if not is_owner(ctx):
-        await ctx.send("❌ Chỉ OWNER mới dùng được lệnh này.")
         return
 
     cursor.execute("SELECT user_id, hwid, expire_date FROM licenses")
     rows = cursor.fetchall()
 
-    if not rows:
-        await ctx.send("⚠️ Không có HWID nào trong hệ thống.")
-        return
-
     now = datetime.utcnow()
-    valid_list = []
+    msg = "**📋 HWID CÒN HIỆU LỰC:**\n\n"
 
     for user_id, hwid, expire_date in rows:
         expire = datetime.strptime(expire_date, "%Y-%m-%d")
         if now <= expire:
-            days_left = (expire - now).days
-            valid_list.append(
-                f"👤 `{user_id}`\n"
-                f"🔑 `{hwid}`\n"
-                f"⏰ còn **{days_left} ngày**"
-            )
+            days = (expire - now).days
+            msg += f"👤 `{user_id}`\n🔑 `{hwid}`\n⏰ {days} ngày\n\n"
 
-    if not valid_list:
-        await ctx.send("⚠️ Không có HWID nào còn hiệu lực.")
-        return
+    await ctx.send(msg[:1900])
 
-    header = "**📋 DANH SÁCH HWID CÒN HIỆU LỰC:**\n\n"
 
-    # gửi nhiều tin nếu quá dài
-    chunk = []
-    length = 0
+# ================= AUTO REMOVE EXPIRED =================
 
-    for item in valid_list:
-        if length + len(item) > 1800:
-            await ctx.send(header + "\n\n".join(chunk))
-            chunk = []
-            length = 0
-        chunk.append(item)
-        length += len(item)
+@tasks.loop(seconds=60)
+async def auto_remove_expired():
+    now = datetime.utcnow()
 
-    if chunk:
-        await ctx.send(header + "\n\n".join(chunk))
+    cursor.execute("SELECT user_id, expire_date FROM licenses")
+    rows = cursor.fetchall()
+
+    for user_id, expire_date in rows:
+        expire = datetime.strptime(expire_date, "%Y-%m-%d")
+        if now > expire:
+            cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
+            conn.commit()
+
+            for guild in bot.guilds:
+                member = guild.get_member(user_id)
+                role = await get_vip_role(guild)
+                if member and role and role in member.roles:
+                    await member.remove_roles(role)
+                    print(f"⛔ Auto removed VIP: {user_id}")
 
 
 # ================= FLASK API =================
@@ -231,7 +211,7 @@ def home():
 def check_license():
     hwid = request.args.get("hwid")
     if not hwid:
-        return jsonify({"status": "error", "msg": "no hwid"})
+        return jsonify({"status": "error"})
 
     cursor.execute(
         "SELECT expire_date FROM licenses WHERE hwid = ?",
@@ -246,10 +226,7 @@ def check_license():
     if datetime.utcnow() > expire:
         return jsonify({"status": "expired"})
 
-    return jsonify({
-        "status": "valid",
-        "expire": row[0]
-    })
+    return jsonify({"status": "valid", "expire": row[0]})
 
 
 # ================= RUN BOTH =================
