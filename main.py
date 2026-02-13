@@ -40,15 +40,9 @@ conn.commit()
 # ================= DISCORD BOT =================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members = True   # ⚠️ BẮT BUỘC
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
-
-
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
-    print("🤖 Bot is ready")
 
 
 def is_owner(ctx):
@@ -63,8 +57,44 @@ async def get_vip_role(guild):
     return discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
 
 
-# ================= COMMANDS =================
+# ================= AUTO REMOVE EXPIRED =================
+async def remove_expired_task():
+    await bot.wait_until_ready()
+    print("🕒 Auto remove expired task started")
 
+    while not bot.is_closed():
+        now = datetime.utcnow()
+
+        cursor.execute("SELECT user_id, expire_date FROM licenses")
+        rows = cursor.fetchall()
+
+        for user_id, expire_date in rows:
+            expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
+            if now > expire:
+                cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
+                conn.commit()
+
+                for guild in bot.guilds:
+                    member = guild.get_member(user_id)
+                    role = await get_vip_role(guild)
+                    if member and role:
+                        await member.remove_roles(role)
+                        print(f"❌ Removed VIP role from {user_id}")
+
+        await asyncio.sleep(60)
+
+
+# ================= EVENTS =================
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
+    print("🤖 Bot is ready")
+
+    # ✅ START TASK Ở ĐÂY (AN TOÀN)
+    bot.loop.create_task(remove_expired_task())
+
+
+# ================= COMMANDS =================
 @bot.command()
 async def ping(ctx):
     await ctx.send("🏓 pong")
@@ -117,33 +147,6 @@ async def setvip(ctx, user_id: int, time_value: str):
     await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
 
 
-@bot.command(name="removevip")
-async def removevip(ctx, user_id: int):
-    if not is_owner(ctx):
-        return
-
-    cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-    member = ctx.guild.get_member(user_id)
-    role = await get_vip_role(ctx.guild)
-    if member and role:
-        await member.remove_roles(role)
-
-    await ctx.send(f"🗑️ Đã remove VIP của <@{user_id}>")
-
-
-@bot.command(name="resetip")
-async def resetip(ctx, user_id: int):
-    if not is_owner(ctx):
-        return
-
-    cursor.execute("UPDATE licenses SET ip = NULL WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-    await ctx.send(f"🔄 Đã reset IP cho `{user_id}`")
-
-
 # ================= FLASK API =================
 app = Flask(__name__)
 
@@ -170,12 +173,8 @@ def check_license():
         return jsonify({"status": "expired"})
 
     saved_ip = row[1]
-
     if saved_ip is None:
-        cursor.execute(
-            "UPDATE licenses SET ip = ? WHERE hwid = ?",
-            (ip, hwid)
-        )
+        cursor.execute("UPDATE licenses SET ip = ? WHERE hwid = ?", (ip, hwid))
         conn.commit()
     elif saved_ip != ip:
         return jsonify({"status": "ip_mismatch"})
@@ -183,36 +182,13 @@ def check_license():
     return jsonify({"status": "valid"})
 
 
-# ================= AUTO REMOVE EXPIRED (FIX) =================
-async def remove_expired_task():
-    await bot.wait_until_ready()
-
-    while not bot.is_closed():
-        now = datetime.utcnow()
-
-        cursor.execute("SELECT user_id, expire_date FROM licenses")
-        rows = cursor.fetchall()
-
-        for user_id, expire_date in rows:
-            expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
-            if now > expire:
-                cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
-                conn.commit()
-
-                for guild in bot.guilds:
-                    member = guild.get_member(user_id)
-                    role = await get_vip_role(guild)
-                    if member and role:
-                        await member.remove_roles(role)
-
-        await asyncio.sleep(60)
-
-
 # ================= RUN =================
 def run_flask():
+    print("🌐 Flask API started")
     app.run(host="0.0.0.0", port=PORT)
 
 
-threading.Thread(target=run_flask).start()
-bot.loop.create_task(remove_expired_task())
+threading.Thread(target=run_flask, daemon=True).start()
+
+print("🚀 Starting Discord bot...")
 bot.run(DISCORD_TOKEN)
