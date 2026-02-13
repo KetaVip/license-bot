@@ -4,6 +4,7 @@ import threading
 import random
 import string
 import time
+import asyncio
 from datetime import datetime, timedelta
 
 import discord
@@ -12,8 +13,8 @@ from flask import Flask, request, jsonify
 
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-PORT = int(os.getenv("PORT", 8080))     # Railway dùng PORT động
-OWNER_ID = 489311363953328138           # 🔴 OWNER ID
+PORT = int(os.getenv("PORT", 8080))
+OWNER_ID = 489311363953328138
 PREFIX = "!"
 DB_FILE = "licenses.db"
 VIP_ROLE_NAME = "VIP"
@@ -50,13 +51,6 @@ async def on_ready():
     print("🤖 Bot is ready")
 
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    await bot.process_commands(message)
-
-
 def is_owner(ctx):
     return ctx.author.id == OWNER_ID
 
@@ -76,7 +70,6 @@ async def ping(ctx):
     await ctx.send("🏓 pong")
 
 
-# ===== SET VIP (days / minutes) =====
 @bot.command(name="setvip")
 async def setvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
@@ -124,7 +117,6 @@ async def setvip(ctx, user_id: int, time_value: str):
     await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
 
 
-# ===== REMOVE VIP =====
 @bot.command(name="removevip")
 async def removevip(ctx, user_id: int):
     if not is_owner(ctx):
@@ -141,7 +133,6 @@ async def removevip(ctx, user_id: int):
     await ctx.send(f"🗑️ Đã remove VIP của <@{user_id}>")
 
 
-# ===== RESET IP (OWNER ONLY) =====
 @bot.command(name="resetip")
 async def resetip(ctx, user_id: int):
     if not is_owner(ctx):
@@ -150,32 +141,7 @@ async def resetip(ctx, user_id: int):
     cursor.execute("UPDATE licenses SET ip = NULL WHERE user_id = ?", (user_id,))
     conn.commit()
 
-    await ctx.send(f"🔄 Đã reset IP cho user `{user_id}`")
-
-
-# ===== CHECK ALL VALID =====
-@bot.command(name="checkall")
-async def checkall(ctx):
-    if not is_owner(ctx):
-        return
-
-    cursor.execute("SELECT user_id, hwid, expire_date FROM licenses")
-    rows = cursor.fetchall()
-
-    if not rows:
-        await ctx.send("⚠️ Không có dữ liệu.")
-        return
-
-    now = datetime.utcnow()
-    msg = "**📋 HWID CÒN HIỆU LỰC:**\n\n"
-
-    for user_id, hwid, expire_date in rows:
-        expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
-        if now <= expire:
-            days_left = (expire - now)
-            msg += f"👤 `{user_id}`\n🔑 `{hwid}`\n⏰ `{days_left}`\n\n"
-
-    await ctx.send(msg[:1900])
+    await ctx.send(f"🔄 Đã reset IP cho `{user_id}`")
 
 
 # ================= FLASK API =================
@@ -214,16 +180,14 @@ def check_license():
     elif saved_ip != ip:
         return jsonify({"status": "ip_mismatch"})
 
-    return jsonify({
-        "status": "valid",
-        "expire": row[0]
-    })
+    return jsonify({"status": "valid"})
 
 
-# ================= AUTO CLEAN EXPIRED =================
-def auto_remove_expired():
-    while True:
-        time.sleep(60)
+# ================= AUTO REMOVE EXPIRED (FIX) =================
+async def remove_expired_task():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
         now = datetime.utcnow()
 
         cursor.execute("SELECT user_id, expire_date FROM licenses")
@@ -235,6 +199,14 @@ def auto_remove_expired():
                 cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
                 conn.commit()
 
+                for guild in bot.guilds:
+                    member = guild.get_member(user_id)
+                    role = await get_vip_role(guild)
+                    if member and role:
+                        await member.remove_roles(role)
+
+        await asyncio.sleep(60)
+
 
 # ================= RUN =================
 def run_flask():
@@ -242,5 +214,5 @@ def run_flask():
 
 
 threading.Thread(target=run_flask).start()
-threading.Thread(target=auto_remove_expired, daemon=True).start()
+bot.loop.create_task(remove_expired_task())
 bot.run(DISCORD_TOKEN)
