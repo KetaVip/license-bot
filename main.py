@@ -13,6 +13,7 @@ from flask import Flask, request, jsonify
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
+
 OWNER_ID = 489311363953328138
 PREFIX = "!"
 DB_FILE = "licenses.db"
@@ -81,7 +82,6 @@ async def auto_remove_expired():
                     role = await get_vip_role(guild)
                     if member and role:
                         await member.remove_roles(role)
-                        print(f"❌ Auto removed VIP role from {user_id}")
 
         await asyncio.sleep(60)
 
@@ -90,7 +90,6 @@ async def auto_remove_expired():
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    print("🤖 Bot is ready")
     bot.loop.create_task(auto_remove_expired())
 
 
@@ -100,7 +99,7 @@ async def ping(ctx):
     await ctx.send("🏓 pong")
 
 
-# ===== SET VIP =====
+# ===== SET VIP (TẠO MỚI) =====
 @bot.command(name="setvip")
 async def setvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
@@ -139,24 +138,84 @@ async def setvip(ctx, user_id: int, time_value: str):
     if role:
         await member.add_roles(role)
 
-    owner = await bot.fetch_user(OWNER_ID)
-    await owner.send(
-        f"👤 User ID: {user_id}\n"
-        f"🔑 HWID: {hwid}\n"
-        f"⏰ Hết hạn: {expire_str}"
+    await ctx.send(
+        f"✅ Đã cấp VIP cho <@{user_id}>\n"
+        f"🔑 HWID: `{hwid}`\n"
+        f"⏰ Hết hạn: `{expire_str}`"
     )
 
-    await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
+
+# ===== ADD VIP (GIA HẠN) =====
+@bot.command(name="addvip")
+async def addvip(ctx, user_id: int, time_value: str):
+    if not is_owner(ctx):
+        return
+
+    cursor.execute("SELECT expire_date FROM licenses WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await ctx.send("❌ User chưa có VIP.")
+        return
+
+    try:
+        current_expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+
+        if time_value.endswith("days"):
+            amount = int(time_value.replace("days", ""))
+            new_expire = current_expire + timedelta(days=amount)
+        elif time_value.endswith("min"):
+            amount = int(time_value.replace("min", ""))
+            new_expire = current_expire + timedelta(minutes=amount)
+        else:
+            await ctx.send("❌ Ví dụ: `!addvip ID 3days` hoặc `!addvip ID 60min`")
+            return
+    except:
+        await ctx.send("❌ Thời gian không hợp lệ.")
+        return
+
+    new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor.execute(
+        "UPDATE licenses SET expire_date = ? WHERE user_id = ?",
+        (new_expire_str, user_id)
+    )
+    conn.commit()
+
+    await ctx.send(
+        f"✅ Gia hạn VIP thành công\n"
+        f"👤 `{user_id}`\n"
+        f"⏰ Hết hạn mới: `{new_expire_str}`"
+    )
 
 
-# ===== VIP RESET IP (LIMIT 10 / DAY) =====
+# ===== REMOVE VIP =====
+@bot.command(name="removevip")
+async def removevip(ctx, user_id: int):
+    if not is_owner(ctx):
+        return
+
+    cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+    for guild in bot.guilds:
+        member = guild.get_member(user_id)
+        role = await get_vip_role(guild)
+        if member and role:
+            await member.remove_roles(role)
+
+    await ctx.send(f"🗑️ Đã xoá VIP của `{user_id}`")
+
+
+# ===== RESET IP (USER) =====
 @bot.command(name="reset")
 async def reset(ctx):
     user_id = ctx.author.id
 
-    cursor.execute("""
-        SELECT reset_count, reset_date FROM licenses WHERE user_id = ?
-    """, (user_id,))
+    cursor.execute(
+        "SELECT reset_count, reset_date FROM licenses WHERE user_id = ?",
+        (user_id,)
+    )
     row = cursor.fetchone()
 
     if not row:
@@ -166,12 +225,11 @@ async def reset(ctx):
     reset_count, reset_date = row
     today = date.today().isoformat()
 
-    # qua ngày mới → reset lượt
     if reset_date != today:
         reset_count = 0
 
     if reset_count >= MAX_RESET_PER_DAY:
-        await ctx.send("❌ Bạn đã dùng hết 10 lần reset hôm nay.")
+        await ctx.send("❌ Bạn đã dùng hết lượt reset hôm nay.")
         return
 
     cursor.execute("""
@@ -183,10 +241,10 @@ async def reset(ctx):
     """, (reset_count + 1, today, user_id))
     conn.commit()
 
-    await ctx.send(f"🔄 Reset IP thành công ({reset_count + 1}/10 hôm nay)")
+    await ctx.send(f"🔄 Reset IP thành công ({reset_count + 1}/{MAX_RESET_PER_DAY})")
 
 
-# ===== OWNER RESET IP =====
+# ===== RESET IP (OWNER) =====
 @bot.command(name="resetip")
 async def resetip(ctx, user_id: int):
     if not is_owner(ctx):
@@ -212,12 +270,16 @@ async def checkall(ctx):
         return
 
     now = datetime.utcnow()
-    msg = "**📋 HWID CÒN HIỆU LỰC:**\n\n"
+    msg = "**📋 DANH SÁCH VIP CÒN HIỆU LỰC**\n\n"
 
     for user_id, hwid, expire_date in rows:
         expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
         if now <= expire:
-            msg += f"👤 `{user_id}`\n🔑 `{hwid}`\n⏰ `{expire - now}`\n\n"
+            msg += (
+                f"👤 `{user_id}`\n"
+                f"🔑 `{hwid}`\n"
+                f"⏰ `{expire - now}`\n\n"
+            )
 
     await ctx.send(msg[:1900])
 
