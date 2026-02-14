@@ -99,7 +99,7 @@ async def ping(ctx):
     await ctx.send("🏓 pong")
 
 
-# ===== SET VIP (TẠO MỚI) =====
+# ===== SET VIP (TẠO MỚI + DM USER) =====
 @bot.command(name="setvip")
 async def setvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
@@ -138,11 +138,28 @@ async def setvip(ctx, user_id: int, time_value: str):
     if role:
         await member.add_roles(role)
 
-    await ctx.send(
-        f"✅ Đã cấp VIP cho <@{user_id}>\n"
-        f"🔑 HWID: `{hwid}`\n"
-        f"⏰ Hết hạn: `{expire_str}`"
-    )
+    # ===== DM USER =====
+    dm_ok = True
+    try:
+        await member.send(
+            "🎉 **BẠN ĐÃ ĐƯỢC CẤP VIP** 🎉\n\n"
+            f"🔑 **HWID:** `{hwid}`\n"
+            f"⏰ **Hết hạn:** `{expire_str}`\n\n"
+            "⚠️ Mỗi HWID chỉ dùng **1 IP**\n"
+            "⚠️ Không share – vi phạm sẽ bị khoá VIP"
+        )
+    except:
+        dm_ok = False
+
+    # ===== THÔNG BÁO OWNER =====
+    if not dm_ok:
+        await ctx.send(
+            f"⚠️ Đã cấp VIP cho <@{user_id}> nhưng **không gửi được DM**.\n"
+            f"🔑 HWID: `{hwid}`\n"
+            f"⏰ Hết hạn: `{expire_str}`"
+        )
+    else:
+        await ctx.send(f"✅ Đã cấp VIP & gửi HWID qua DM cho <@{user_id}>")
 
 
 # ===== ADD VIP (GIA HẠN) =====
