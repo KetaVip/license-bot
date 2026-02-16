@@ -23,11 +23,9 @@ PREFIX = "!"
 VIP_ROLE_NAME = "VIP"
 MAX_RESET_PER_DAY = 10
 
-# ===== DATABASE PATH (RAILWAY VOLUME) =====
+# ================= DATABASE PATH (RAILWAY VOLUME) =================
 DATA_DIR = "/data"
 DB_FILE = os.path.join(DATA_DIR, "licenses.db")
-
-# ================= ENSURE DATA DIR =================
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ================= DATABASE =================
@@ -90,16 +88,20 @@ async def auto_remove_expired():
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    bot.loop.create_task(auto_remove_expired())
+    if not hasattr(bot, "auto_task_started"):
+        bot.loop.create_task(auto_remove_expired())
+        bot.auto_task_started = True
 
 # ================= COMMANDS =================
 @bot.command()
 async def ping(ctx):
     await ctx.send("🏓 pong")
 
+# ===== SET VIP (CẤP MỚI – TẠO HWID) =====
 @bot.command(name="setvip")
 async def setvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
+        await ctx.send("❌ Bạn không có quyền.")
         return
 
     member = ctx.guild.get_member(user_id)
@@ -135,15 +137,69 @@ async def setvip(ctx, user_id: int, time_value: str):
     if role:
         await member.add_roles(role)
 
+    await ctx.send(
+        f"✅ **Đã cấp VIP**\n"
+        f"👤 <@{user_id}>\n"
+        f"🔑 HWID: `{hwid}`\n"
+        f"⏰ Hết hạn: `{expire_str}`"
+    )
+
+# ===== ADD VIP (GIA HẠN – CHỈ OWNER) =====
+@bot.command(name="addvip")
+async def addvip(ctx, user_id: int, time_value: str):
+    if not is_owner(ctx):
+        await ctx.send("❌ Bạn không có quyền.")
+        return
+
+    cursor.execute(
+        "SELECT hwid, expire_date FROM licenses WHERE user_id = ?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        await ctx.send("❌ User này chưa có VIP.")
+        return
+
+    hwid, old_expire_str = row
+    old_expire = datetime.strptime(old_expire_str, "%Y-%m-%d %H:%M:%S")
+
     try:
-        await member.send(
-            f"🎉 VIP activated\nHWID: {hwid}\nExpire: {expire_str}"
-        )
+        if time_value.endswith("days"):
+            delta = timedelta(days=int(time_value.replace("days", "")))
+        elif time_value.endswith("min"):
+            delta = timedelta(minutes=int(time_value.replace("min", "")))
+        else:
+            await ctx.send("❌ Ví dụ: !addvip ID 3days hoặc 60min")
+            return
     except:
-        pass
+        await ctx.send("❌ Thời gian không hợp lệ.")
+        return
 
-    await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
+    now = datetime.utcnow()
+    new_expire = old_expire + delta if old_expire > now else now + delta
+    new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
 
+    cursor.execute("""
+        UPDATE licenses
+        SET expire_date = ?
+        WHERE user_id = ?
+    """, (new_expire_str, user_id))
+    conn.commit()
+
+    member = ctx.guild.get_member(user_id)
+    role = await get_vip_role(ctx.guild)
+    if member and role:
+        await member.add_roles(role)
+
+    await ctx.send(
+        f"✅ **Gia hạn VIP thành công**\n"
+        f"👤 <@{user_id}>\n"
+        f"🔑 HWID: `{hwid}`\n"
+        f"⏰ Hết hạn mới: `{new_expire_str}`"
+    )
+
+# ===== RESET IP (USER) =====
 @bot.command(name="reset")
 async def reset(ctx):
     user_id = ctx.author.id
@@ -205,13 +261,8 @@ def check_license():
 
     return jsonify({"status": "valid"})
 
-# ================= RUN FLASK (FIX CHẠY 2 LẦN) =================
 def run_flask():
-    app.run(
-        host="0.0.0.0",
-        port=PORT,
-        use_reloader=False   # 🔥 QUAN TRỌNG
-    )
+    app.run(host="0.0.0.0", port=PORT, use_reloader=False)
 
 threading.Thread(target=run_flask, daemon=True).start()
 
