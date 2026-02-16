@@ -14,9 +14,12 @@ from flask import Flask, request, jsonify
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
 
-OWNER_ID = 489311363953328138
+OWNER_IDS = [
+    489311363953328138,  # nick chính
+    412189424441491456,  # nick phụ (thay bằng ID thật)
+]
 PREFIX = "!"
-DB_FILE = "licenses.db"
+DB_FILE = "/data/licenses.db"
 VIP_ROLE_NAME = "VIP"
 MAX_RESET_PER_DAY = 10
 # =========================================
@@ -49,7 +52,7 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
 
 def is_owner(ctx):
-    return ctx.author.id == OWNER_ID
+    return ctx.author.id in OWNER_IDS
 
 
 def generate_hwid(length=16):
