@@ -182,10 +182,47 @@ async def resetip(ctx, user_id: int):
 
     await ctx.send(f"🔄 Đã reset IP cho <@{user_id}>")
 
+# ===== RESET IP (VIP – GIỚI HẠN 10 LẦN / NGÀY) =====
+@bot.command()
+async def reset(ctx):
+    user_id = ctx.author.id
+
+    cursor.execute(
+        "SELECT reset_count, reset_date FROM licenses WHERE user_id = ?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        return await ctx.send("❌ Bạn không có VIP.")
+
+    reset_count, reset_date = row
+    today = date.today().isoformat()
+
+    if reset_date != today:
+        reset_count = 0
+
+    if reset_count >= MAX_RESET_PER_DAY:
+        return await ctx.send("❌ Bạn đã hết lượt reset hôm nay (10/10).")
+
+    cursor.execute("""
+        UPDATE licenses
+        SET ip = NULL,
+            reset_count = ?,
+            reset_date = ?
+        WHERE user_id = ?
+    """, (reset_count + 1, today, user_id))
+    conn.commit()
+
+    await ctx.send(f"🔄 Reset IP thành công ({reset_count + 1}/{MAX_RESET_PER_DAY})")
+
 # ===== CHECK VIP (USER) =====
 @bot.command()
 async def check(ctx):
-    cursor.execute("SELECT expire_date FROM licenses WHERE user_id = ?", (ctx.author.id,))
+    cursor.execute(
+        "SELECT expire_date FROM licenses WHERE user_id = ?",
+        (ctx.author.id,)
+    )
     row = cursor.fetchone()
 
     if not row:
