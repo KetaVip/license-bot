@@ -92,6 +92,7 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     bot.loop.create_task(auto_remove_expired())
 
+# ================= COMMANDS =================
 @bot.command()
 async def ping(ctx):
     await ctx.send("🏓 pong")
@@ -204,8 +205,15 @@ def check_license():
 
     return jsonify({"status": "valid"})
 
+# ================= RUN FLASK (FIX CHẠY 2 LẦN) =================
 def run_flask():
-    app.run(host="0.0.0.0", port=PORT)
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        use_reloader=False   # 🔥 QUAN TRỌNG
+    )
 
 threading.Thread(target=run_flask, daemon=True).start()
+
+# ================= START BOT =================
 bot.run(DISCORD_TOKEN)
