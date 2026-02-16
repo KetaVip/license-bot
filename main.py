@@ -26,15 +26,9 @@ MAX_RESET_PER_DAY = 10
 # ===== DATABASE PATH (RAILWAY VOLUME) =====
 DATA_DIR = "/data"
 DB_FILE = os.path.join(DATA_DIR, "licenses.db")
-# =========================================
-
 
 # ================= ENSURE DATA DIR =================
-# ⚠️ RẤT QUAN TRỌNG – FIX LỖI APPLY CHANGES TREO
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR, exist_ok=True)
-# ================================================
-
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # ================= DATABASE =================
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -51,8 +45,6 @@ CREATE TABLE IF NOT EXISTS licenses (
 )
 """)
 conn.commit()
-# ===========================================
-
 
 # ================= DISCORD BOT =================
 intents = discord.Intents.default()
@@ -61,18 +53,14 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-
 def is_owner(ctx):
     return ctx.author.id in OWNER_IDS
-
 
 def generate_hwid(length=16):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-
 async def get_vip_role(guild):
     return discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
-
 
 # ================= AUTO REMOVE EXPIRED =================
 async def auto_remove_expired():
@@ -99,21 +87,15 @@ async def auto_remove_expired():
 
         await asyncio.sleep(60)
 
-
-# ================= EVENTS =================
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     bot.loop.create_task(auto_remove_expired())
 
-
-# ================= COMMANDS =================
 @bot.command()
 async def ping(ctx):
     await ctx.send("🏓 pong")
 
-
-# ===== SET VIP =====
 @bot.command(name="setvip")
 async def setvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
@@ -132,7 +114,7 @@ async def setvip(ctx, user_id: int, time_value: str):
             amount = int(time_value.replace("min", ""))
             expire = datetime.utcnow() + timedelta(minutes=amount)
         else:
-            await ctx.send("❌ Ví dụ: `!setvip ID 3days` hoặc `!setvip ID 60min`")
+            await ctx.send("❌ Ví dụ: !setvip ID 3days hoặc 60min")
             return
     except:
         await ctx.send("❌ Thời gian không hợp lệ.")
@@ -154,17 +136,13 @@ async def setvip(ctx, user_id: int, time_value: str):
 
     try:
         await member.send(
-            "🎉 **BẠN ĐÃ ĐƯỢC CẤP VIP** 🎉\n\n"
-            f"🔑 **HWID:** `{hwid}`\n"
-            f"⏰ **Hết hạn:** `{expire_str}`"
+            f"🎉 VIP activated\nHWID: {hwid}\nExpire: {expire_str}"
         )
     except:
         pass
 
     await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
 
-
-# ===== RESET IP (USER) =====
 @bot.command(name="reset")
 async def reset(ctx):
     user_id = ctx.author.id
@@ -200,10 +178,8 @@ async def reset(ctx):
 
     await ctx.send(f"🔄 Reset IP ({reset_count + 1}/{MAX_RESET_PER_DAY})")
 
-
 # ================= FLASK API =================
 app = Flask(__name__)
-
 
 @app.route("/check")
 def check_license():
@@ -228,11 +204,8 @@ def check_license():
 
     return jsonify({"status": "valid"})
 
-
-# ================= RUN =================
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
-
 
 threading.Thread(target=run_flask, daemon=True).start()
 bot.run(DISCORD_TOKEN)
