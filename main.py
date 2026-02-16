@@ -130,26 +130,30 @@ async def setvip(ctx, user_id: int, time_value: str):
 
     try:
         await member.send(
-            f"🎉 **Bạn đã được cấp VIP**\n"
+            f"🎉 **BẠN ĐÃ ĐƯỢC CẤP VIP**\n"
             f"🔑 HWID: `{hwid}`\n"
             f"⏰ Hết hạn: `{expire_str}`"
         )
     except:
         pass
 
-# ===== ADD VIP (OWNER – GIA HẠN) =====
+# ===== ADD VIP (OWNER – GIA HẠN + DM USER) =====
 @bot.command()
 async def addvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
         return await ctx.send("❌ Bạn không có quyền.")
 
-    cursor.execute("SELECT expire_date FROM licenses WHERE user_id = ?", (user_id,))
+    cursor.execute(
+        "SELECT expire_date, hwid FROM licenses WHERE user_id = ?",
+        (user_id,)
+    )
     row = cursor.fetchone()
 
     if not row:
         return await ctx.send("❌ User này chưa có VIP.")
 
     old_expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+    hwid = row[1]
 
     try:
         if time_value.endswith("days"):
@@ -175,6 +179,19 @@ async def addvip(ctx, user_id: int, time_value: str):
         f"✅ Gia hạn VIP cho <@{user_id}>\n"
         f"⏰ Hết hạn mới: `{new_expire_str}`"
     )
+
+    # ===== DM USER =====
+    member = ctx.guild.get_member(user_id)
+    if member:
+        try:
+            await member.send(
+                f"🔔 **VIP CỦA BẠN ĐÃ ĐƯỢC GIA HẠN**\n\n"
+                f"🔑 HWID: `{hwid}`\n"
+                f"⏰ Hết hạn mới: `{new_expire_str}`\n\n"
+                f"💎 Cảm ơn bạn đã tiếp tục sử dụng VIP!"
+            )
+        except:
+            pass
 
 # ===== REMOVE VIP (OWNER) =====
 @bot.command()
