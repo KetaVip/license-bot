@@ -23,12 +23,18 @@ PREFIX = "!"
 VIP_ROLE_NAME = "VIP"
 MAX_RESET_PER_DAY = 10
 
-# ================= DATABASE PATH =================
-# 🚨 BẮT BUỘC: tạo thư mục volume trước
+# ===== DATABASE PATH (RAILWAY VOLUME) =====
 DATA_DIR = "/data"
-os.makedirs(DATA_DIR, exist_ok=True)
-
 DB_FILE = os.path.join(DATA_DIR, "licenses.db")
+# =========================================
+
+
+# ================= ENSURE DATA DIR =================
+# ⚠️ RẤT QUAN TRỌNG – FIX LỖI APPLY CHANGES TREO
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR, exist_ok=True)
+# ================================================
+
 
 # ================= DATABASE =================
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -45,8 +51,8 @@ CREATE TABLE IF NOT EXISTS licenses (
 )
 """)
 conn.commit()
+# ===========================================
 
-print("✅ SQLite database ready at", DB_FILE)
 
 # ================= DISCORD BOT =================
 intents = discord.Intents.default()
@@ -55,7 +61,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-# ================= HELPERS =================
+
 def is_owner(ctx):
     return ctx.author.id in OWNER_IDS
 
@@ -66,6 +72,7 @@ def generate_hwid(length=16):
 
 async def get_vip_role(guild):
     return discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
+
 
 # ================= AUTO REMOVE EXPIRED =================
 async def auto_remove_expired():
@@ -81,9 +88,7 @@ async def auto_remove_expired():
         for user_id, expire_date in rows:
             expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S")
             if now > expire:
-                cursor.execute(
-                    "DELETE FROM licenses WHERE user_id = ?", (user_id,)
-                )
+                cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
                 conn.commit()
 
                 for guild in bot.guilds:
@@ -94,16 +99,19 @@ async def auto_remove_expired():
 
         await asyncio.sleep(60)
 
+
 # ================= EVENTS =================
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     bot.loop.create_task(auto_remove_expired())
 
+
 # ================= COMMANDS =================
 @bot.command()
 async def ping(ctx):
     await ctx.send("🏓 pong")
+
 
 # ===== SET VIP =====
 @bot.command(name="setvip")
@@ -150,15 +158,13 @@ async def setvip(ctx, user_id: int, time_value: str):
             f"🔑 **HWID:** `{hwid}`\n"
             f"⏰ **Hết hạn:** `{expire_str}`"
         )
-        await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
     except:
-        await ctx.send(
-            f"⚠️ Đã cấp VIP nhưng không gửi được DM\n"
-            f"HWID: `{hwid}`\n"
-            f"Hết hạn: `{expire_str}`"
-        )
+        pass
 
-# ===== RESET IP USER =====
+    await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
+
+
+# ===== RESET IP (USER) =====
 @bot.command(name="reset")
 async def reset(ctx):
     user_id = ctx.author.id
@@ -192,14 +198,12 @@ async def reset(ctx):
     """, (reset_count + 1, today, user_id))
     conn.commit()
 
-    await ctx.send(f"🔄 Reset IP thành công ({reset_count + 1}/{MAX_RESET_PER_DAY})")
+    await ctx.send(f"🔄 Reset IP ({reset_count + 1}/{MAX_RESET_PER_DAY})")
+
 
 # ================= FLASK API =================
 app = Flask(__name__)
 
-@app.route("/")
-def home():
-    return "License bot running"
 
 @app.route("/check")
 def check_license():
@@ -217,19 +221,18 @@ def check_license():
         return jsonify({"status": "expired"})
 
     if row[1] is None:
-        cursor.execute(
-            "UPDATE licenses SET ip = ? WHERE hwid = ?",
-            (ip, hwid)
-        )
+        cursor.execute("UPDATE licenses SET ip = ? WHERE hwid = ?", (ip, hwid))
         conn.commit()
     elif row[1] != ip:
         return jsonify({"status": "ip_mismatch"})
 
     return jsonify({"status": "valid"})
 
+
 # ================= RUN =================
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
+
 
 threading.Thread(target=run_flask, daemon=True).start()
 bot.run(DISCORD_TOKEN)
