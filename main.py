@@ -16,6 +16,8 @@ VN_TZ = timezone(timedelta(hours=7))
 def now_vn():
     return datetime.now(VN_TZ)
 
+WARNING_SECONDS = 60  # 🔔 báo trước 1 phút
+
 # ================= CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
@@ -25,13 +27,9 @@ OWNER_IDS = [
     412189424441491456,
 ]
 
-SERVER_LICENSE_OWNER = OWNER_IDS[0]  # owner chính giữ license server
-
 PREFIX = "!"
 VIP_ROLE_NAME = "VIP"
 MAX_RESET_PER_DAY = 10
-
-WARNING_SECONDS = 60  # ⚠️ báo trước 1 phút
 
 # ================= DATABASE =================
 DATA_DIR = "/data"
@@ -61,8 +59,6 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-BOT_LOCKED = False  # 🔒 khóa bot
-
 # ================= UTILS =================
 def is_owner(ctx):
     return ctx.author.id in OWNER_IDS
@@ -73,39 +69,20 @@ def generate_hwid(length=16):
 async def get_vip_role(guild):
     return discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
 
-def server_license_valid():
-    cursor.execute(
-        "SELECT expire_date FROM licenses WHERE user_id = ?",
-        (SERVER_LICENSE_OWNER,)
-    )
-    row = cursor.fetchone()
-    if not row:
-        return False
-
-    expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=VN_TZ)
-    return now_vn() <= expire
-
-# ================= GLOBAL CHECK (LOCK BOT) =================
-@bot.check
-async def global_check(ctx):
-    if not server_license_valid():
-        await ctx.send("🔒 **Bot đã bị khóa do license server hết hạn**")
-        return False
-    return True
-
 # ================= AUTO CHECK EXPIRE + WARNING =================
-async def auto_check_vip():
-    global BOT_LOCKED
+async def auto_check_expire():
     await bot.wait_until_ready()
 
     while not bot.is_closed():
         now = now_vn()
 
-        BOT_LOCKED = not server_license_valid()
-
         cursor.execute("SELECT user_id, expire_date, warned FROM licenses")
-        for user_id, expire_date, warned in cursor.fetchall():
-            expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=VN_TZ)
+        rows = cursor.fetchall()
+
+        for user_id, expire_date, warned in rows:
+            expire = datetime.strptime(
+                expire_date, "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=VN_TZ)
 
             # ❌ HẾT HẠN
             if now > expire:
@@ -122,7 +99,7 @@ async def auto_check_vip():
                     user = await bot.fetch_user(user_id)
                     await user.send(
                         "❌ **VIP của bạn đã hết hạn**\n"
-                        "👉 Vui lòng liên hệ **OWNER** để gia hạn."
+                        "👉 Vui lòng liên hệ **OWNER** để gia hạn"
                     )
                 except:
                     pass
@@ -134,7 +111,7 @@ async def auto_check_vip():
                     user = await bot.fetch_user(user_id)
                     await user.send(
                         "⚠️ **VIP của bạn sắp hết hạn**\n"
-                        "👉 Vui lòng liên hệ **OWNER** để gia hạn."
+                        "👉 Vui lòng liên hệ **OWNER** để gia hạn"
                     )
                 except:
                     pass
@@ -151,7 +128,7 @@ async def auto_check_vip():
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     if not hasattr(bot, "task_started"):
-        bot.loop.create_task(auto_check_vip())
+        bot.loop.create_task(auto_check_expire())
         bot.task_started = True
 
 # ================= COMMANDS =================
@@ -195,7 +172,7 @@ async def setvip(ctx, user_id: int, time_value: str):
 
     await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
 
-# ===== ADD VIP (OWNER – GIA HẠN) =====
+# ===== ADD VIP (OWNER) =====
 @bot.command()
 async def addvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
@@ -206,7 +183,9 @@ async def addvip(ctx, user_id: int, time_value: str):
     if not row:
         return await ctx.send("❌ User chưa có VIP.")
 
-    old_expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=VN_TZ)
+    old_expire = datetime.strptime(
+        row[0], "%Y-%m-%d %H:%M:%S"
+    ).replace(tzinfo=VN_TZ)
 
     try:
         if time_value.endswith("days"):
@@ -222,7 +201,7 @@ async def addvip(ctx, user_id: int, time_value: str):
     new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
 
     cursor.execute("""
-        UPDATE licenses 
+        UPDATE licenses
         SET expire_date = ?, warned = 0
         WHERE user_id = ?
     """, (new_expire_str, user_id))
@@ -260,7 +239,10 @@ def check_license():
     if not row:
         return jsonify({"status": "invalid"})
 
-    expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=VN_TZ)
+    expire = datetime.strptime(
+        row[0], "%Y-%m-%d %H:%M:%S"
+    ).replace(tzinfo=VN_TZ)
+
     if now_vn() > expire:
         return jsonify({"status": "expired"})
 
