@@ -25,9 +25,13 @@ OWNER_IDS = [
     412189424441491456,
 ]
 
+SERVER_LICENSE_OWNER = OWNER_IDS[0]  # owner chính giữ license server
+
 PREFIX = "!"
 VIP_ROLE_NAME = "VIP"
 MAX_RESET_PER_DAY = 10
+
+WARNING_SECONDS = 60  # ⚠️ báo trước 1 phút
 
 # ================= DATABASE =================
 DATA_DIR = "/data"
@@ -44,7 +48,8 @@ CREATE TABLE IF NOT EXISTS licenses (
     expire_date TEXT,
     ip TEXT,
     reset_count INTEGER DEFAULT 0,
-    reset_date TEXT
+    reset_date TEXT,
+    warned INTEGER DEFAULT 0
 )
 """)
 conn.commit()
@@ -56,6 +61,8 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
+BOT_LOCKED = False  # 🔒 khóa bot
+
 # ================= UTILS =================
 def is_owner(ctx):
     return ctx.author.id in OWNER_IDS
@@ -66,15 +73,41 @@ def generate_hwid(length=16):
 async def get_vip_role(guild):
     return discord.utils.get(guild.roles, name=VIP_ROLE_NAME)
 
-# ================= AUTO REMOVE EXPIRED =================
-async def auto_remove_expired():
+def server_license_valid():
+    cursor.execute(
+        "SELECT expire_date FROM licenses WHERE user_id = ?",
+        (SERVER_LICENSE_OWNER,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return False
+
+    expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=VN_TZ)
+    return now_vn() <= expire
+
+# ================= GLOBAL CHECK (LOCK BOT) =================
+@bot.check
+async def global_check(ctx):
+    if not server_license_valid():
+        await ctx.send("🔒 **Bot đã bị khóa do license server hết hạn**")
+        return False
+    return True
+
+# ================= AUTO CHECK EXPIRE + WARNING =================
+async def auto_check_vip():
+    global BOT_LOCKED
     await bot.wait_until_ready()
+
     while not bot.is_closed():
         now = now_vn()
 
-        cursor.execute("SELECT user_id, expire_date FROM licenses")
-        for user_id, expire_date in cursor.fetchall():
+        BOT_LOCKED = not server_license_valid()
+
+        cursor.execute("SELECT user_id, expire_date, warned FROM licenses")
+        for user_id, expire_date, warned in cursor.fetchall():
             expire = datetime.strptime(expire_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=VN_TZ)
+
+            # ❌ HẾT HẠN
             if now > expire:
                 cursor.execute("DELETE FROM licenses WHERE user_id = ?", (user_id,))
                 conn.commit()
@@ -85,13 +118,40 @@ async def auto_remove_expired():
                     if member and role:
                         await member.remove_roles(role)
 
-        await asyncio.sleep(60)
+                try:
+                    user = await bot.fetch_user(user_id)
+                    await user.send(
+                        "❌ **VIP của bạn đã hết hạn**\n"
+                        "👉 Vui lòng liên hệ **OWNER** để gia hạn."
+                    )
+                except:
+                    pass
+                continue
+
+            # ⚠️ SẮP HẾT HẠN (1 PHÚT)
+            if (expire - now).total_seconds() <= WARNING_SECONDS and warned == 0:
+                try:
+                    user = await bot.fetch_user(user_id)
+                    await user.send(
+                        "⚠️ **VIP của bạn sắp hết hạn**\n"
+                        "👉 Vui lòng liên hệ **OWNER** để gia hạn."
+                    )
+                except:
+                    pass
+
+                cursor.execute(
+                    "UPDATE licenses SET warned = 1 WHERE user_id = ?",
+                    (user_id,)
+                )
+                conn.commit()
+
+        await asyncio.sleep(5)
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     if not hasattr(bot, "task_started"):
-        bot.loop.create_task(auto_remove_expired())
+        bot.loop.create_task(auto_check_vip())
         bot.task_started = True
 
 # ================= COMMANDS =================
@@ -124,8 +184,8 @@ async def setvip(ctx, user_id: int, time_value: str):
 
     cursor.execute("""
         INSERT OR REPLACE INTO licenses
-        (user_id, hwid, expire_date, ip, reset_count, reset_date)
-        VALUES (?, ?, ?, NULL, 0, ?)
+        (user_id, hwid, expire_date, ip, reset_count, reset_date, warned)
+        VALUES (?, ?, ?, NULL, 0, ?, 0)
     """, (user_id, hwid, expire_str, date.today().isoformat()))
     conn.commit()
 
@@ -135,28 +195,18 @@ async def setvip(ctx, user_id: int, time_value: str):
 
     await ctx.send(f"✅ Đã cấp VIP cho <@{user_id}>")
 
-    try:
-        await member.send(
-            f"🎉 **BẠN ĐÃ ĐƯỢC CẤP VIP**\n"
-            f"🔑 HWID: `{hwid}`\n"
-            f"⏰ Hết hạn: `{expire_str}` (GMT+7)"
-        )
-    except:
-        pass
-
 # ===== ADD VIP (OWNER – GIA HẠN) =====
 @bot.command()
 async def addvip(ctx, user_id: int, time_value: str):
     if not is_owner(ctx):
         return await ctx.send("❌ Bạn không có quyền.")
 
-    cursor.execute("SELECT expire_date, hwid FROM licenses WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT expire_date FROM licenses WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
         return await ctx.send("❌ User chưa có VIP.")
 
     old_expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=VN_TZ)
-    hwid = row[1]
 
     try:
         if time_value.endswith("days"):
@@ -168,28 +218,17 @@ async def addvip(ctx, user_id: int, time_value: str):
     except:
         return await ctx.send("❌ Thời gian không hợp lệ.")
 
-    now = now_vn()
-    new_expire = old_expire + delta if old_expire > now else now + delta
+    new_expire = max(old_expire, now_vn()) + delta
     new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute(
-        "UPDATE licenses SET expire_date = ? WHERE user_id = ?",
-        (new_expire_str, user_id)
-    )
+    cursor.execute("""
+        UPDATE licenses 
+        SET expire_date = ?, warned = 0
+        WHERE user_id = ?
+    """, (new_expire_str, user_id))
     conn.commit()
 
     await ctx.send(f"✅ Gia hạn VIP cho <@{user_id}> đến `{new_expire_str}`")
-
-    member = ctx.guild.get_member(user_id)
-    if member:
-        try:
-            await member.send(
-                f"🔔 **VIP CỦA BẠN ĐÃ ĐƯỢC GIA HẠN**\n"
-                f"🔑 HWID: `{hwid}`\n"
-                f"⏰ Hết hạn mới: `{new_expire_str}` (GMT+7)"
-            )
-        except:
-            pass
 
 # ===== CHECK ALL (OWNER) =====
 @bot.command()
@@ -204,57 +243,9 @@ async def checkall(ctx):
 
     msg = "**📋 DANH SÁCH VIP:**\n\n"
     for uid, hwid, exp in rows:
-        msg += f"👤 <@{uid}>\n🔑 `{hwid}`\n⏰ `{exp}` (GMT+7)\n\n"
+        msg += f"👤 <@{uid}>\n🔑 `{hwid}`\n⏰ `{exp}`\n\n"
 
     await ctx.send(msg)
-
-# ===== RESET IP (OWNER) =====
-@bot.command()
-async def resetip(ctx, user_id: int):
-    if not is_owner(ctx):
-        return await ctx.send("❌ Bạn không có quyền.")
-
-    cursor.execute("UPDATE licenses SET ip = NULL WHERE user_id = ?", (user_id,))
-    conn.commit()
-    await ctx.send(f"🔄 Đã reset IP cho <@{user_id}>")
-
-# ===== RESET IP (VIP – GIỚI HẠN) =====
-@bot.command()
-async def reset(ctx):
-    user_id = ctx.author.id
-
-    cursor.execute("SELECT reset_count, reset_date FROM licenses WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if not row:
-        return await ctx.send("❌ Bạn không có VIP.")
-
-    reset_count, reset_date = row
-    today = date.today().isoformat()
-
-    if reset_date != today:
-        reset_count = 0
-
-    if reset_count >= MAX_RESET_PER_DAY:
-        return await ctx.send("❌ Bạn đã hết lượt reset hôm nay.")
-
-    cursor.execute("""
-        UPDATE licenses
-        SET ip = NULL, reset_count = ?, reset_date = ?
-        WHERE user_id = ?
-    """, (reset_count + 1, today, user_id))
-    conn.commit()
-
-    await ctx.send(f"🔄 Reset IP ({reset_count + 1}/{MAX_RESET_PER_DAY})")
-
-# ===== CHECK VIP (USER) =====
-@bot.command()
-async def check(ctx):
-    cursor.execute("SELECT expire_date FROM licenses WHERE user_id = ?", (ctx.author.id,))
-    row = cursor.fetchone()
-    if not row:
-        return await ctx.send("❌ Bạn không có VIP.")
-
-    await ctx.send(f"⏰ VIP của bạn hết hạn: `{row[0]}` (GMT+7)")
 
 # ================= FLASK API =================
 app = Flask(__name__)
